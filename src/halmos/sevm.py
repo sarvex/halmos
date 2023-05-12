@@ -56,12 +56,12 @@ def wstore(mem: List[Byte], loc: int, size: int, val: Bytes) -> None:
 
 def wstore_partial(mem: List[Byte], loc: int, offset: int, size: int, data: Bytes, datasize: int) -> None:
     if size > 0:
-        if not datasize >= offset + size: raise ValueError(datasize, offset, size)
+        if datasize < offset + size: raise ValueError(datasize, offset, size)
         sub_data = Extract((datasize-1 - offset)*8+7, (datasize - offset - size)*8, data)
         wstore(mem, loc, size, sub_data)
 
 def wstore_bytes(mem: List[Byte], loc: int, size: int, arr: List[Byte]) -> None:
-    if not size == len(arr): raise ValueError(size, arr)
+    if size != len(arr): raise ValueError(size, arr)
     for i in range(size):
         if not eq(arr[i].sort(), BitVecSort(8)): raise ValueError(arr)
         mem[loc + i] = arr[i]
@@ -90,12 +90,17 @@ class State:
         ])
 
     def str_memory(self) -> str:
-        idx: int = 0
         ret: str = 'Memory:'
         size: int = len(self.memory)
-        while idx < size:
-            ret = ret + '\n' + '- ' + str(hex(idx)) + ': ' + str(self.memory[idx:min(idx+32,size)])
-            idx = idx + 32
+        for idx in range(0, size, 32):
+            ret = (
+                ret
+                + '\n'
+                + '- '
+                + hex(idx)
+                + ': '
+                + str(self.memory[idx : min(idx + 32, size)])
+            )
         return ret + '\n'
 
     def push(self, v: Word) -> None:
@@ -138,10 +143,7 @@ class State:
     def ret(self) -> Bytes:
         loc: int = self.mloc()
         size: int = int(str(self.pop())) # size (in bytes) must be concrete
-        if size > 0:
-            return wload(self.memory, loc, size)
-        else:
-            return None
+        return wload(self.memory, loc, size) if size > 0 else None
 
 class Exec: # an execution path
     # network
@@ -206,25 +208,54 @@ class Exec: # an execution path
         return '\n'.join([str(cond) for cond in self.solver.assertions()])
 
     def str_path(self) -> str:
-        return ''.join(map(lambda x: '- ' + str(x) + '\n', filter(lambda x: str(x) != 'True', self.path)))
+        return ''.join(
+            map(
+                lambda x: f'- {str(x)}' + '\n',
+                filter(lambda x: str(x) != 'True', self.path),
+            )
+        )
 
     def __str__(self) -> str:
-        return ''.join([
-            'PC: '              , str(self.this), ' ', str(self.pc), ' ', str(self.pgm[self.this][self.pc]), '\n',
-            str(self.st),
-            'Storage:\n'        , ''.join(map(lambda x: '- ' + str(x) + ': ' + str(self.storage[x]) + '\n', self.storage)),
-            'Balance:\n'        , ''.join(map(lambda x: '- ' + str(x) + ': ' + str(self.balance[x]) + '\n', self.balance)),
-        #   'Solver:\n'         , self.str_solver(), '\n',
-            'Path:\n'           , self.str_path(),
-            'Output: '          , str(self.output) , '\n',
-            'Log: '             , str(self.log)    , '\n',
-        #   'Opcodes:\n'        , self.str_cnts(),
-        #   'Memsize: '         , str(len(self.st.memory)), '\n',
-            'Storage updates:\n', ''.join(map(lambda x: '- ' + str(x) + '\n', self.storages)),
-            'SHA3 hashes:\n'    , ''.join(map(lambda x: '- ' + str(x) + '\n', self.sha3s)),
-            'External calls:\n' , ''.join(map(lambda x: '- ' + str(x) + '\n', self.calls)),
-        #   'Calldata: '        , str(self.calldata), '\n',
-        ])
+        return ''.join(
+            [
+                'PC: ',
+                str(self.this),
+                ' ',
+                str(self.pc),
+                ' ',
+                str(self.pgm[self.this][self.pc]),
+                '\n',
+                str(self.st),
+                'Storage:\n',
+                ''.join(
+                    map(
+                        lambda x: f'- {str(x)}: {str(self.storage[x])}' + '\n',
+                        self.storage,
+                    )
+                ),
+                'Balance:\n',
+                ''.join(
+                    map(
+                        lambda x: f'- {str(x)}: {str(self.balance[x])}' + '\n',
+                        self.balance,
+                    )
+                ),
+                'Path:\n',
+                self.str_path(),
+                'Output: ',
+                str(self.output),
+                '\n',
+                'Log: ',
+                str(self.log),
+                '\n',
+                'Storage updates:\n',
+                ''.join(map(lambda x: f'- {str(x)}' + '\n', self.storages)),
+                'SHA3 hashes:\n',
+                ''.join(map(lambda x: f'- {str(x)}' + '\n', self.sha3s)),
+                'External calls:\n',
+                ''.join(map(lambda x: f'- {str(x)}' + '\n', self.calls)),
+            ]
+        )
 
     def next_pc(self) -> None:
         self.pc += 1
@@ -234,13 +265,17 @@ class Exec: # an execution path
     def sinit(self, slot: int, keys) -> None:
         if slot not in self.storage[self.this]:
             if len(keys) == 0:
-                self.storage[self.this][slot] = BitVec(f'storage_slot_{str(slot)}', 256)
+                self.storage[self.this][slot] = BitVec(f'storage_slot_{slot}', 256)
             else:
-                self.storage[self.this][slot] = Array(f'storage_slot_{str(slot)}', BitVecSort(len(keys)*256), BitVecSort(256))
+                self.storage[self.this][slot] = Array(
+                    f'storage_slot_{slot}',
+                    BitVecSort(len(keys) * 256),
+                    BitVecSort(256),
+                )
 
     def sload(self, loc: Word) -> Word:
         offsets = self.decode_storage_loc(loc)
-        if not len(offsets) > 0: raise ValueError(offsets)
+        if len(offsets) <= 0: raise ValueError(offsets)
         slot, keys = int(str(offsets[0])), offsets[1:]
         self.sinit(slot, keys)
         if len(keys) == 0:
@@ -252,7 +287,7 @@ class Exec: # an execution path
 
     def sstore(self, loc: Any, val: Any) -> None:
         offsets = self.decode_storage_loc(loc)
-        if not len(offsets) > 0: raise ValueError(offsets)
+        if len(offsets) <= 0: raise ValueError(offsets)
         slot, keys = int(str(offsets[0])), offsets[1:]
         self.sinit(slot, keys)
         if len(keys) == 0:
@@ -280,7 +315,7 @@ class Exec: # an execution path
     def sha3(self) -> None:
         loc: int = self.st.mloc()
         size: int = int(str(self.st.pop())) # size (in bytes) must be concrete
-        f_sha3 = Function('sha3_'+str(size*8), BitVecSort(size*8), BitVecSort(256))
+        f_sha3 = Function(f'sha3_{str(size * 8)}', BitVecSort(size*8), BitVecSort(256))
         sha3 = f_sha3(wload(self.st.memory, loc, size))
         sha3_var = BitVec(f'sha3_var{self.cnt_sha3()}', 256)
         self.solver.add(sha3_var == sha3)
@@ -316,16 +351,12 @@ class Exec: # an execution path
     def returndatasize(self) -> int:
         if self.output is None:
             return 0
-        else:
-            size: int = self.output.sort().size()
-            if not size % 8 == 0: raise ValueError(size)
-            return int(size / 8)
+        size: int = self.output.sort().size()
+        if size % 8 != 0: raise ValueError(size)
+        return size // 8
 
     def read_code(self, idx: int) -> str:
-        if idx < len(self.code[self.this]):
-            return self.code[self.this][idx]
-        else:
-            return '00'
+        return self.code[self.this][idx] if idx < len(self.code[self.this]) else '00'
 
     def is_jumpdest(self, x: Word) -> bool:
         if not is_bv_value(x): return False
@@ -348,15 +379,9 @@ def ops_to_pgm(ops: List[Opcode]) -> List[Opcode]:
 # int_to_bool(x) == b   if sort(x) = int
 def test(x: Word, b: bool) -> Word:
     if eq(x.sort(), BoolSort()):
-        if b:
-            return x
-        else:
-            return Not(x)
+        return x if b else Not(x)
     elif x.sort().name() == 'bv':
-        if b:
-            return (x != con(0))
-        else:
-            return (x == con(0))
+        return (x != con(0)) if b else (x == con(0))
     else:
         raise ValueError(x)
 
@@ -368,16 +393,9 @@ def is_zero(x: Word) -> Word:
 
 def and_or(x: Word, y: Word, is_and: bool) -> Word:
     if eq(x.sort(), BoolSort()) and eq(y.sort(), BoolSort()):
-        if is_and:
-            return And(x, y)
-        else:
-            return Or(x, y)
-    #elif x.sort().name() == 'bv' and y.sort().name() == 'bv':
+        return And(x, y) if is_and else Or(x, y)
     elif eq(x.sort(), BitVecSort(256)) and eq(y.sort(), BitVecSort(256)):
-        if is_and:
-            return (x & y)
-        else:
-            return (x | y)
+        return (x & y) if is_and else (x | y)
     elif eq(x.sort(), BoolSort()) and eq(y.sort(), BitVecSort(256)):
         return and_or(If(x, con(1), con(0)), y, is_and)
     elif eq(x.sort(), BitVecSort(256)) and eq(y.sort(), BoolSort()):
@@ -396,16 +414,10 @@ def b2i(w: Word) -> Word:
         return con(1)
     if w.decl().name() == 'false':
         return con(0)
-    if eq(w.sort(), BoolSort()):
-        return If(w, con(1), con(0))
-    else:
-        return w
+    return If(w, con(1), con(0)) if eq(w.sort(), BoolSort()) else w
 
 def is_power_of_two(x: int) -> bool:
-    if x > 0:
-        return not (x & (x - 1))
-    else:
-        return False
+    return not (x & (x - 1)) if x > 0 else False
 
 class SEVM:
     options: Dict
@@ -419,17 +431,40 @@ class SEVM:
         if op == 'ADD':
             if self.options.get('add'):
                 return w1 + w2
+            return (
+                w1 + w2
+                if w1.decl().name() == 'bv' and w2.decl().name() == 'bv'
+                else f_add(w1, w2)
+            )
+        elif op == 'DIV':
+            if self.options.get('div'):
+                return UDiv(w1, w2) # unsigned div (bvudiv)
             if w1.decl().name() == 'bv' and w2.decl().name() == 'bv':
-                return w1 + w2
+                return UDiv(w1, w2)
+            elif w2.decl().name() == 'bv':
+                i2: int = int(str(w2)) # must be concrete
+                if i2 == 0:
+                    return con(0)
+                elif is_power_of_two(i2):
+                    return LShR(w1, int(math.log(i2,2)))
+                elif self.options.get('divByConst'):
+                    return UDiv(w1, w2)
+                else:
+                    return f_div(w1, w2)
             else:
-                return f_add(w1, w2)
-        elif op == 'SUB':
-            if self.options.get('sub'):
-                return w1 - w2
-            if w1.decl().name() == 'bv' and w2.decl().name() == 'bv':
-                return w1 - w2
-            else:
-                return f_sub(w1, w2)
+                return f_div(w1, w2)
+        elif op == 'EXP':
+            if w1.decl().name() != 'bv' or w2.decl().name() != 'bv':
+                return f_exp(w1, w2)
+            i2: int = int(str(w2)) # must be concrete
+            i1: int = int(str(w1))
+            return con(i1 ** i2)
+        elif op == 'MOD':
+            return (
+                URem(w1, w2)
+                if w1.decl().name() == 'bv' and w2.decl().name() == 'bv'
+                else f_mod(w1, w2)
+            )
         elif op == 'MUL':
             if self.options.get('mul'):
                 return w1 * w2
@@ -453,62 +488,40 @@ class SEVM:
                     return f_mul(w1, w2)
             else:
                 return f_mul(w1, w2)
-        elif op == 'DIV':
-            if self.options.get('div'):
-                return UDiv(w1, w2) # unsigned div (bvudiv)
-            if w1.decl().name() == 'bv' and w2.decl().name() == 'bv':
-                return UDiv(w1, w2)
-            elif w2.decl().name() == 'bv':
-                i2: int = int(str(w2)) # must be concrete
-                if i2 == 0:
-                    return con(0)
-                elif is_power_of_two(i2):
-                    return LShR(w1, int(math.log(i2,2)))
-                elif self.options.get('divByConst'):
-                    return UDiv(w1, w2)
-                else:
-                    return f_div(w1, w2)
-            else:
-                return f_div(w1, w2)
-        elif op == 'MOD':
-            if w1.decl().name() == 'bv' and w2.decl().name() == 'bv':
-                return URem(w1, w2) # bvurem
-            else:
-                return f_mod(w1, w2)
         elif op == 'SDIV':
-            if w1.decl().name() == 'bv' and w2.decl().name() == 'bv':
-                return w1 / w2 # bvsdiv
-            else:
-                return f_sdiv(w1, w2)
+            return (
+                w1 / w2
+                if w1.decl().name() == 'bv' and w2.decl().name() == 'bv'
+                else f_sdiv(w1, w2)
+            )
         elif op == 'SMOD':
-            if w1.decl().name() == 'bv' and w2.decl().name() == 'bv':
-                return SRem(w1, w2) # bvsrem  # vs: w1 % w2 (bvsmod w1 w2)
-            else:
-                return f_smod(w1, w2)
-        elif op == 'EXP':
-            if w1.decl().name() == 'bv' and w2.decl().name() == 'bv':
-                i1: int = int(str(w1)) # must be concrete
-                i2: int = int(str(w2)) # must be concrete
-                return con(i1 ** i2)
-            else:
-                return f_exp(w1, w2)
+            return (
+                SRem(w1, w2)
+                if w1.decl().name() == 'bv' and w2.decl().name() == 'bv'
+                else f_smod(w1, w2)
+            )
+        elif op == 'SUB':
+            if self.options.get('sub'):
+                return w1 - w2
+            return (
+                w1 - w2
+                if w1.decl().name() == 'bv' and w2.decl().name() == 'bv'
+                else f_sub(w1, w2)
+            )
         else:
             raise ValueError(op)
 
     def call(self, ex: Exec, op: str, stack: List[Tuple[Exec,int]], step_id: int, out: List[Exec]) -> None:
         gas = ex.st.pop()
         to = ex.st.pop()
-        if op == 'STATICCALL':
-            fund = con(0)
-        else:
-            fund = ex.st.pop()
+        fund = con(0) if op == 'STATICCALL' else ex.st.pop()
         arg_loc: int = ex.st.mloc()
         arg_size: int = int(str(ex.st.pop())) # size (in bytes) must be concrete
         ret_loc: int = ex.st.mloc()
         ret_size: int = int(str(ex.st.pop())) # size (in bytes) must be concrete
 
-        if not arg_size >= 0: raise ValueError(arg_size)
-        if not ret_size >= 0: raise ValueError(ret_size)
+        if arg_size < 0: raise ValueError(arg_size)
+        if ret_size < 0: raise ValueError(ret_size)
 
         ex.balance[ex.this] = self.arith('SUB', ex.balance[ex.this], fund)
 
@@ -549,8 +562,8 @@ class SEVM:
                 wstore_partial(new_ex.st.memory, ret_loc, 0, min(ret_size, new_ex.returndatasize()), new_ex.output, new_ex.returndatasize())
 
                 # set status code (in stack)
-                if opcode == 'STOP' or opcode == 'RETURN' or opcode == 'REVERT' or opcode == 'INVALID':
-                    if opcode == 'STOP' or opcode == 'RETURN':
+                if opcode in ['STOP', 'RETURN', 'REVERT', 'INVALID']:
+                    if opcode in ['STOP', 'RETURN']:
                         new_ex.st.push(con(1))
                     else:
                         new_ex.st.push(con(0))
@@ -566,10 +579,25 @@ class SEVM:
             # push exit code
             if arg_size > 0:
                 arg = wload(ex.st.memory, arg_loc, arg_size)
-                f_call = Function('call_'+str(arg_size*8), BitVecSort(256), BitVecSort(256), BitVecSort(256), BitVecSort(256), BitVecSort(arg_size*8), BitVecSort(256))
+                f_call = Function(
+                    f'call_{str(arg_size * 8)}',
+                    BitVecSort(256),
+                    BitVecSort(256),
+                    BitVecSort(256),
+                    BitVecSort(256),
+                    BitVecSort(arg_size * 8),
+                    BitVecSort(256),
+                )
                 exit_code = f_call(con(ex.cnt_call()), gas, to, fund, arg)
             else:
-                f_call = Function('call_'+str(arg_size*8), BitVecSort(256), BitVecSort(256), BitVecSort(256), BitVecSort(256),                         BitVecSort(256))
+                f_call = Function(
+                    f'call_{str(arg_size * 8)}',
+                    BitVecSort(256),
+                    BitVecSort(256),
+                    BitVecSort(256),
+                    BitVecSort(256),
+                    BitVecSort(256),
+                )
                 exit_code = f_call(con(ex.cnt_call()), gas, to, fund)
             exit_code_var = BitVec(f'call{ex.cnt_call()}', 256)
             ex.solver.add(exit_code_var == exit_code)
@@ -585,14 +613,13 @@ class SEVM:
                 # vm.fail()
                 if arg == hevm_cheat_code.fail_payload: # BitVecVal(hevm_cheat_code.fail_payload, 800)
                     ex.failed = True
-                # vm.assume()
                 elif eq(arg.sort(), BitVecSort((4+32)*8)) and simplify(Extract(287, 256, arg)) == hevm_cheat_code.assume_sig:
                     assume_cond = simplify(is_non_zero(Extract(255, 0, arg)))
                     ex.solver.add(assume_cond)
                     ex.path.append(str(assume_cond))
                 else:
                     # TODO: support other cheat codes
-                    ex.error = str('Unsupported cheat code: calldata: ' + str(arg))
+                    ex.error = str(f'Unsupported cheat code: calldata: {str(arg)}')
                     out.append(ex)
                     return
 
@@ -602,7 +629,11 @@ class SEVM:
 
             # store return value
             if ret_size > 0:
-                f_ret = Function('ret_'+str(ret_size*8), BitVecSort(256), BitVecSort(ret_size*8))
+                f_ret = Function(
+                    f'ret_{str(ret_size * 8)}',
+                    BitVecSort(256),
+                    BitVecSort(ret_size * 8),
+                )
                 ret = f_ret(exit_code_var)
                 wstore(ex.st.memory, ret_loc, ret_size, ret)
                 ex.output = ret
@@ -664,7 +695,7 @@ class SEVM:
             if new_ex.failed: raise ValueError(new_ex)
 
             opcode = new_ex.pgm[new_ex.this][new_ex.pc].op[0]
-            if opcode == 'STOP' or opcode == 'RETURN':
+            if opcode in ['STOP', 'RETURN']:
                 # new contract code
                 new_hexcode = new_ex.output
                 if not is_bv_value(new_hexcode): raise ValueError(new_hexcode)
@@ -765,8 +796,6 @@ class SEVM:
             stack.append((new_ex_true, step_id))
         elif new_ex_false:
             stack.append((new_ex_false, step_id))
-        else:
-            pass # this may happen if the previous path condition was considered unknown but turns out to be unsat later
 
     def run(self, ex0: Exec) -> Tuple[List[Exec], Steps]:
         out: List[Exec] = []

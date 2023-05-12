@@ -36,23 +36,17 @@ class Opcode:
         self.sm = None
 
     def __str__(self) -> str:
-        if self.sm:
-            return ' '.join(self.op) + ' ' + str(self.sm)
-        else:
-            return ' '.join(self.op)
+        return ' '.join(self.op) + ' ' + str(self.sm) if self.sm else ' '.join(self.op)
 
 
 # Decode ByteCodes to Opcodes
 def decode(hexcode: str) -> Tuple[List[Opcode], List[str]]:
-    if hexcode.startswith('0x'):
-        hexcode = hexcode[2:]
+    hexcode = hexcode.removeprefix('0x')
     code: List[str] = [hexcode[i:i+2] for i in range(0, len(hexcode), 2)]
     hx: str = ''
     ops: List[Opcode] = []
     pushcnt: int = 0
-    cnt: int = -1
-    for item in code:
-        cnt += 1
+    for cnt, item in enumerate(code):
         if pushcnt > 0:
             hx += item.lower()
             pushcnt -= 1
@@ -65,18 +59,18 @@ def decode(hexcode: str) -> Tuple[List[Opcode], List[str]]:
                 pushcnt = int(item, 16) - int('60', 16) + 1
         else:
             ops.append(Opcode(cnt, item.lower(), ['ERROR']))
-        #   raise ValueError('Invalid opcode', str(item))
+            #   raise ValueError('Invalid opcode', str(item))
     if hx: # hx is not empty
-        ops[-1].op.append('ERROR ' + hx + ' (' + str(pushcnt) + ' bytes missed)')
+        ops[-1].op.append(f'ERROR {hx} ({str(pushcnt)} bytes missed)')
     #   raise ValueError('Not enough push bytes', hx)
     return (ops, code)
 
 def print_opcodes(ops: List[Opcode], mode: str) -> None:
     width: int = len(str(ops[-1].pc)) # the number of digits of the max pc
     for o in ops:
-        s: str = '[' + align(o.pc, width) + '] ' + o.hx + ' ' + o.op[0]
+        s: str = f'[{align(o.pc, width)}] {o.hx} {o.op[0]}'
         if len(o.op) > 1: # when o.op[0] is PUSH*
-            s += ' ' + push_bytes(o.op[1], mode)
+            s += f' {push_bytes(o.op[1], mode)}'
         print(s)
 
 def align(cnt: int, width: int) -> str:
@@ -84,11 +78,7 @@ def align(cnt: int, width: int) -> str:
 
 def push_bytes(h: str, mode: str) -> str:
     i: str = str(int(h, 16))
-    return {
-        'hex'     :           '0x' + h  ,
-        'int'     : i                   ,
-        'int:hex' : i + ':' + '0x' + h  ,
-    }[mode]
+    return {'hex': f'0x{h}', 'int': i, 'int:hex': f'{i}:0x{h}'}[mode]
 
 # usage: <cmd> [int|hex|int:hex]
 if __name__ == '__main__':

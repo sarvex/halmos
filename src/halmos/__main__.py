@@ -48,9 +48,7 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 def add_srcmap(ops: List[Opcode], srcmap: List[str], srcs: Dict) -> None:
-    fpath = {} # file id -> file path
-    for src in srcs:
-        fpath[srcs[src]['id']] = src
+    fpath = {srcs[src]['id']: src for src in srcs}
     #   print(src, srcs[src]['id'])
 
     start, length, fileid, jump, mdepth = 0, 0, 0, '-', 0
@@ -105,10 +103,7 @@ def run(
 
     f_cd = Function('cd', BitVecSort(256), BitVecSort(8))
     cdsize = 10000
-    cd = []
-    for i in range(cdsize):
-        cd.append(f_cd(con(i)))
-
+    cd = [f_cd(con(i)) for i in range(cdsize)]
     wstore(cd, 0, 4, BitVecVal(funselector, 32))
 
     dyn_param_size = []
@@ -122,7 +117,7 @@ def run(
                 param_type = param['type']
                 if param_type == 'tuple':
                     raise ValueError('Not supported', param_type) # TODO: support struct types
-                elif param_type == 'bytes' or param_type == 'string':
+                elif param_type in ['bytes', 'string']:
                     tba.append((4+offset, param)) # wstore(cd, 4+offset, 32, BitVecVal(<?offset?>, 256))
                     offset += 32
                 elif param_type.endswith('[]'):
@@ -130,18 +125,16 @@ def run(
                 else:
                     match = re.search(r'(u?int[0-9]*|address|bool|bytes[0-9]+)(\[([0-9]+)\])?', param_type)
                     if not match: raise ValueError('Unknown type', param_type)
-                    typ = match.group(1)
-                    dim = match.group(3)
-                    if dim: # array
+                    typ = match[1]
+                    if dim := match[3]:
                         for idx in range(int(dim)):
                             wstore(cd, 4+offset, 32, BitVec(f'p_{param_name}[{idx}]_{typ}', 256))
                             offset += 32
-                    else: # primitive
+                    else:
                         wstore(cd, 4+offset, 32, BitVec(f'p_{param_name}_{typ}', 256))
                         offset += 32
 
             for loc_param in tba:
-                loc   = loc_param[0]
                 param = loc_param[1]
                 param_name = param['name']
                 param_type = param['type']
@@ -154,19 +147,19 @@ def run(
 
                 dyn_param_size.append(f'|{param_name}|={size}')
 
-                if param_type == 'bytes' or param_type == 'string':
-                    # head
-                    wstore(cd, loc, 32, BitVecVal(offset, 256))
-                    # tail
-                    size_pad_right = int((size + 31) / 32) * 32
-                    wstore(cd, 4+offset, 32, BitVecVal(size, 256))
-                    offset += 32
-                    if size_pad_right > 0:
-                        wstore(cd, 4+offset, size_pad_right, BitVec(f'p_{param_name}_{param_type}', 8*size_pad_right))
-                        offset += size_pad_right
-                else:
+                if param_type not in ['bytes', 'string']:
                     raise ValueError('not feasible')
 
+                loc   = loc_param[0]
+                # head
+                wstore(cd, loc, 32, BitVecVal(offset, 256))
+                # tail
+                size_pad_right = int((size + 31) / 32) * 32
+                wstore(cd, 4+offset, 32, BitVecVal(size, 256))
+                offset += 32
+                if size_pad_right > 0:
+                    wstore(cd, 4+offset, size_pad_right, BitVec(f'p_{param_name}_{param_type}', 8*size_pad_right))
+                    offset += size_pad_right
     #
     # storage
     #
@@ -217,7 +210,7 @@ def run(
         if len(setup_exs) != 1: raise ValueError('multiple paths exist in setUp()')
         setup_ex = setup_exs[0]
         setup_opcode = setup_ex.pgm[setup_ex.this][setup_ex.pc].op[0]
-        if (setup_opcode != 'STOP' and setup_opcode != 'RETURN') or setup_ex.failed: raise ValueError('setUp() failed')
+        if setup_opcode not in ['STOP', 'RETURN'] or setup_ex.failed: raise ValueError('setUp() failed')
 
     #
     # run
@@ -253,7 +246,7 @@ def run(
     stuck = []
     for idx, ex in enumerate(exs):
         opcode = ex.pgm[ex.this][ex.pc].op[0]
-        if opcode == 'STOP' or opcode == 'RETURN':
+        if opcode in ['STOP', 'RETURN']:
             if ex.failed:
                 gen_model(args, models, idx, ex)
             else:
@@ -267,24 +260,20 @@ def run(
 
     end = timer()
 
-    passed = (normal > 0 and len(models) == 0 and len(stuck) == 0)
-    if passed:
-        passfail = color_good('[PASS]')
-    else:
-        passfail = color_warn('[FAIL]')
-
+    passed = normal > 0 and not models and not stuck
+    passfail = color_good('[PASS]') if passed else color_warn('[FAIL]')
     # print result
     print(f"{passfail} {funsig} (paths: {normal}/{len(exs)}, time: {end - start:0.2f}s, bounds: [{', '.join(dyn_param_size)}])")
     for model, idx, ex in models:
         if model:
-            print(color_warn('Counterexample: ' + str(model)))
+            print(color_warn(f'Counterexample: {str(model)}'))
         else:
             print(color_warn('Counterexample: unknown'))
         if args.verbose >= 1:
             print(f'# {idx+1} / {len(exs)}')
             print(ex)
     for opcode, idx, ex in stuck:
-        print(color_warn('Not supported: ' + opcode + ' ' + ex.error))
+        print(color_warn(f'Not supported: {opcode} {ex.error}'))
         if args.verbose >= 1:
             print(f'# {idx+1} / {len(exs)}')
             print(ex)
@@ -302,10 +291,7 @@ def run(
             json.dump(steps, json_file)
 
     # exitcode
-    if passed:
-        return 0
-    else:
-        return 1
+    return 0 if passed else 1
 
 def gen_model(args: argparse.Namespace, models: List, idx: int, ex: Exec) -> None:
     res = ex.solver.check()
@@ -339,11 +325,8 @@ def gen_model(args: argparse.Namespace, models: List, idx: int, ex: Exec) -> Non
             res = unsat
     if res == unsat:
         return
-    if res == sat:
-        if is_valid_model(model):
-            models.append((model, idx, ex))
-        else:
-            models.append((None, idx, ex))
+    if res == sat and is_valid_model(model):
+        models.append((model, idx, ex))
     else:
         models.append((None, idx, ex))
 
@@ -427,7 +410,6 @@ def main() -> int:
             for contract in contracts:
                 hexcode = source_unit.bytecodes_runtime[contract]
                 srcmap = source_unit.srcmaps_runtime[contract]
-                srcs = {}
                 abi = source_unit.abis[contract]
                 methodIdentifiers = source_unit.hashes(contract)
 
@@ -439,6 +421,7 @@ def main() -> int:
                     num_passed = 0
                     num_failed = 0
                     print(f'\nRunning {len(funsigs)} tests for {filename.short}:{contract}')
+                    srcs = {}
                     for funsig in funsigs:
                         funselector = methodIdentifiers[funsig]
                         funname = funsig.split('(')[0]
@@ -455,10 +438,7 @@ def main() -> int:
         raise ValueError('No matching tests found', args.contract, args.function)
 
     # exitcode
-    if total_failed == 0:
-        return 0
-    else:
-        return 1
+    return 0 if total_failed == 0 else 1
 
 if __name__ == '__main__':
     sys.exit(main())
